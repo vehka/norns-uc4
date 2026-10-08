@@ -13,9 +13,9 @@ Files: `lib/mod.lua` is the mod, `lib/uc4.lua` the library it uses.
 
 ## Install
 
-Put this repository in `dust/code/` (as `norns-uc4`), enable it in
-SYSTEM > MODS and restart norns. Then load the Norn setup to the UC4, once
-(see below).
+- In maiden: `;install https://github.com/vehka/norns-uc4/`
+- In SYSTEM > MODS, enable the mod (E3) and restart norns.
+- Then load the Norn setup to the UC4, once (see below).
 
 ## How params are mapped
 
