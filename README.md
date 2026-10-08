@@ -104,24 +104,29 @@ The encoder groups are named `nor1` to `nor8`.
 ### Loading it to the UC4
 
 The UC4 only takes setup data when it is in receive mode, and the Norn setup
-**overwrites one of its 18 setups** (setup 16 by default). Make a backup first
-if that setup is in use: in setup mode, hold encoder 8 (`SndA`) while a sysex
-tool on a computer records the dump.
+**overwrites one of its 18 setups**: the one that is selected on the UC4.
+Make a backup first if that setup is in use: in setup mode, select the setup with encoder 1 and
+hold encoder 4 (`Sndc`) while a sysex tool on a computer records the dump,
+for example `uc4 receive` of [uc4-tool](https://github.com/vehka/uc4-tool).
+(Encoder 8, `SndA`, sends all 18 setups in one dump. Sending such a dump back
+to the UC4 hasn't been tried.)
 
 1. Install and enable the mod (see above).
 2. On the UC4, hold shift and press edit twice (setup mode). Select the
-   setup to overwrite with encoder 1 (`SE16`). Then press encoder 7 and
-   keep it down while the bar lines run across the display, until they
-   finish. (A short press only shows the function name, `rEc`, and the UC4
-   then ignores the data.)
-3. On norns, open SYSTEM > MODS > NORNS-UC4. With `norn setup` selected, E3
-   picks the setup number (the same as on the UC4), K3 sends.
+   setup to overwrite with encoder 1 (for example `SE16`). Then press
+   encoder 7 and keep it down while the bar lines run across the display,
+   until it shows `rC00`. (A short press only shows the function name,
+   `rEc`, and the UC4 then ignores the data.)
+3. On norns, open SYSTEM > MODS > NORNS-UC4. With `norn setup` selected,
+   K3 sends. Holding K1 shows these steps on the norns screen.
 4. The UC4 shows the setup number (`SE16`) when the setup is stored. If it
    still shows `rEc`, receive mode wasn't active: repeat from step 2. Press
    edit to leave setup mode.
 
 `.syx` dumps copied to `dust/data/uc4/` show up in the same menu (E2), for
-restoring a backup.
+restoring a backup. A dump of one setup is stored in the setup selected on
+the UC4, also when it was made from another one. A file is checked before it
+is sent, and one that is cut short or isn't a UC4 dump is not sent.
 
 ## Using the library in a script
 
@@ -139,7 +144,8 @@ itself: `local uc4 = include("norns-uc4/lib/uc4")`.
 | `uc4.refresh_values(dev)` | send all mapped params' values |
 | `uc4.watch(dev)` / `uc4.unwatch(dev)` | turn the param view on / off |
 | `uc4.send_norn_setup(dev, slot)` | send the Norn setup (UC4 in receive mode) |
-| `uc4.load_conf(dev, filename)` | send a `.syx` setup dump (UC4 in receive mode) |
+| `uc4.load_conf(dev, filename)` | check and send a `.syx` setup dump (UC4 in receive mode) |
+| `uc4.read_dump(filename)` | check a `.syx` setup dump; `.slot` is the setup it was made from |
 
 ## Notes
 
@@ -160,5 +166,6 @@ itself: `local uc4 = include("norns-uc4/lib/uc4")`.
   that does nothing, so the script's own drawing isn't shown, and calls the
   script's `redraw()` when the view goes away.
 - The setup dump format was worked out from dumps made by a UC4 with
-  firmware 2.03. It is described at the top of the setup section in
-  `lib/uc4.lua`.
+  firmware 2.03. It is described in the
+  [docs of uc4-tool](https://github.com/vehka/uc4-tool/blob/main/docs/sysex-format.md),
+  and in short at the top of the setup section in `lib/uc4.lua`.

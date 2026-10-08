@@ -51,7 +51,8 @@ uc4.CONTROLS = 8
 uc4.CHANNEL = {enc = 13, push = 14, fader = 15, button = 16}
 uc4.FADER9_CC = 64
 
--- the UC4 has 18 setups. the Norn setup goes to this one by default
+-- the UC4 has 18 setups. the Norn setup dump is made with the
+-- addresses of this one (it is stored in the setup selected on the UC4)
 uc4.SETUPS = 18
 uc4.SETUP_SLOT = 16
 
@@ -694,7 +695,10 @@ end
 
 
 --
--- NORN SETUP
+-- SETUP DUMPS
+--
+-- the format is described in full in the docs of uc4-tool:
+-- https://github.com/vehka/uc4-tool/blob/main/docs/sysex-format.md
 --
 -- a setup dump is one sysex message: a header, blocks of the UC4's
 -- setup memory and an end tag. every byte is sent as a tag followed by
@@ -719,14 +723,29 @@ end
 -- encoders, push buttons, green buttons and faders:
 --                type/channel, number, lower value, upper value,
 --                mode/display
+--
+-- a dump of one setup holds the blocks of that setup at the addresses
+-- of the setup it was made from. the UC4 doesn't go by them: it stores
+-- the dump in the setup that is selected on it when it receives.
 
 local ADDR_NAMES = 0x1480
 local ADDR_FADER9 = 0x1700
 local ADDR_ROWS = 0x1C00
+local NAMES_SIZE = 0x20
 local SETUP_SIZE = 0x500
 local BLOCK_SIZE = 0x40
 local BLOCK_GAP = 30 -- zero bytes after each block
 local FIRMWARE = {2, 3}
+local DEVICE_UC4 = 0x06
+local DUMP_ONE_SETUP = 0x02
+
+local TAG_HEADER = {0x41, 0x42, 0x43, 0x44}
+local TAG_ADDR_HIGH = 0x49
+local TAG_ADDR_LOW = 0x4A
+local TAG_CHECKSUM_HIGH = 0x4B
+local TAG_CHECKSUM_LOW = 0x4C
+local TAG_DATA = 0x4D
+local TAG_END = 0x4F
 
 -- display characters used in the group names
 local CHAR = {n = 0x16, o = 0x17, r = 0x1A}
@@ -748,29 +767,46 @@ local function push_byte(out, tag, value)
   out[#out + 1] = 0x10 + (value & 0x0F)
 end
 
-local function push_block(out, addr, data)
-  local sum = 0
-  push_byte(out, 0x49, addr >> 8)
-  push_byte(out, 0x4A, addr & 0xFF)
-  for _, v in ipairs(data) do
-    push_byte(out, 0x4D, v)
-    sum = sum + v
+-- the sysex bytes of a dump, laid out as the UC4 itself sends them.
+-- dump: type, firmware {major, minor}, blocks {{addr = , data = }, ...}
+local function build_dump(dump)
+  local out = {0xF0, 0, 0, 0}
+  local head = {DEVICE_UC4, dump.type, dump.firmware[1], dump.firmware[2]}
+  for i, tag in ipairs(TAG_HEADER) do push_byte(out, tag, head[i]) end
+  for _, block in ipairs(dump.blocks) do
+    local sum = 0
+    push_byte(out, TAG_ADDR_HIGH, block.addr >> 8)
+    push_byte(out, TAG_ADDR_LOW, block.addr & 0xFF)
+    for _, v in ipairs(block.data) do
+      push_byte(out, TAG_DATA, v)
+      sum = sum + v
+    end
+    push_byte(out, TAG_CHECKSUM_HIGH, sum >> 8)
+    push_byte(out, TAG_CHECKSUM_LOW, sum & 0xFF)
+    for _ = 1, BLOCK_GAP do out[#out + 1] = 0 end
   end
-  push_byte(out, 0x4B, sum >> 8)
-  push_byte(out, 0x4C, sum & 0xFF)
-  for _ = 1, BLOCK_GAP do out[#out + 1] = 0 end
+  push_byte(out, TAG_END, DEVICE_UC4)
+  out[#out + 1] = 0xF7
+  return out
+end
+
+-- addresses of a setup's group names, fader 9 and rows
+local function slot_addresses(slot)
+  return ADDR_NAMES + (slot - 1) * NAMES_SIZE,
+    ADDR_FADER9 + (slot - 1) * BLOCK_SIZE,
+    ADDR_ROWS + (slot - 1) * SETUP_SIZE
 end
 
 --- build the sysex dump of the Norn setup.
--- a dump is made for one setup slot and overwrites that setup.
--- @tparam integer slot setup number 1-18
+-- the UC4 stores it in the setup selected on it, whatever the slot.
+-- @tparam integer slot setup number 1-18 whose addresses the dump has
 -- @treturn table sysex bytes
 function uc4.norn_setup(slot)
-  local out = {0xF0, 0, 0, 0}
-  push_byte(out, 0x41, 0x06)
-  push_byte(out, 0x42, 0x02)
-  push_byte(out, 0x43, FIRMWARE[1])
-  push_byte(out, 0x44, FIRMWARE[2])
+  local blocks = {}
+  local function push_block(addr, data)
+    blocks[#blocks + 1] = {addr = addr, data = data}
+  end
+  local addr_names, addr_fader9, addr = slot_addresses(slot)
 
   -- group names: nor1 - nor8
   local names = {}
@@ -780,7 +816,7 @@ function uc4.norn_setup(slot)
     names[#names + 1] = CHAR.r
     names[#names + 1] = g
   end
-  push_block(out, ADDR_NAMES + (slot - 1) * 4 * uc4.GROUPS, names)
+  push_block(addr_names, names)
 
   -- fader 9, the same in every group
   local fader9 = {}
@@ -792,9 +828,8 @@ function uc4.norn_setup(slot)
     fader9[#fader9 + 1] = MODE.fader
   end
   while #fader9 < BLOCK_SIZE do fader9[#fader9 + 1] = 0xFF end
-  push_block(out, ADDR_FADER9 + (slot - 1) * BLOCK_SIZE, fader9)
+  push_block(addr_fader9, fader9)
 
-  local addr = ADDR_ROWS + (slot - 1) * SETUP_SIZE
   for _, kind in ipairs(ROW_ORDER) do
     local rows = {{}, {}, {}, {}, {}}
     for i = 1, BLOCK_SIZE do
@@ -805,15 +840,98 @@ function uc4.norn_setup(slot)
       rows[5][i] = MODE[kind]
     end
     for _, row in ipairs(rows) do
-      push_block(out, addr, row)
+      push_block(addr, row)
       addr = addr + BLOCK_SIZE
     end
   end
 
-  push_byte(out, 0x4F, 0x06)
-  out[#out + 1] = 0xF7
-  return out
+  return build_dump({type = DUMP_ONE_SETUP, firmware = FIRMWARE, blocks = blocks})
 end
+
+--- read a setup dump (the contents of a .syx file) and check it.
+-- @tparam string data
+-- @treturn table|nil dump: type, firmware, blocks, and slot (the number
+-- of the setup it was made from) or all = true (it holds several setups)
+-- @treturn string|nil what is wrong with the data
+function uc4.parse_dump(data)
+  if #data < 2 or data:byte(1) ~= 0xF0 or data:byte(-1) ~= 0xF7 then
+    return nil, "not a sysex file"
+  end
+  local dump = {blocks = {}}
+  local head = {}
+  local addr, block, checksum, ended = nil, nil, 0, false
+  local i, last = 2, #data - 1
+  while i <= last do
+    local tag, high, low = data:byte(i, i + 2)
+    if tag == 0 then
+      i = i + 1
+    else
+      if i + 2 > last or high >> 4 ~= 2 or low >> 4 ~= 1 or ended then
+        return nil, "not a uc4 dump"
+      end
+      local value = ((high & 0x0F) << 4) | (low & 0x0F)
+      i = i + 3
+      if #head < #TAG_HEADER then
+        if tag ~= TAG_HEADER[#head + 1] then return nil, "not a uc4 dump" end
+        head[#head + 1] = value
+      elseif tag == TAG_ADDR_HIGH then
+        addr, block = value << 8, {}
+      elseif tag == TAG_ADDR_LOW and addr then
+        addr = addr | value
+      elseif tag == TAG_DATA and block then
+        block[#block + 1] = value
+      elseif tag == TAG_CHECKSUM_HIGH then
+        checksum = value << 8
+      elseif tag == TAG_CHECKSUM_LOW and block then
+        local sum = 0
+        for _, v in ipairs(block) do sum = sum + v end
+        if sum ~= (checksum | value) then
+          return nil, string.format("wrong checksum at %04X", addr)
+        end
+        dump.blocks[#dump.blocks + 1] = {addr = addr, data = block}
+        addr, block = nil, nil
+      elseif tag == TAG_END then
+        ended = true
+      else
+        return nil, "not a uc4 dump"
+      end
+    end
+  end
+  if #head < #TAG_HEADER or head[1] ~= DEVICE_UC4 then
+    return nil, "not a uc4 dump"
+  end
+  if not ended then return nil, "the dump is cut short" end
+  dump.type = head[2]
+  dump.firmware = {head[3], head[4]}
+
+  -- the setups it holds: those whose first row is in it
+  local slots = {}
+  for _, b in ipairs(dump.blocks) do
+    local offset = b.addr - ADDR_ROWS
+    if offset >= 0 and offset % SETUP_SIZE == 0
+      and offset // SETUP_SIZE < uc4.SETUPS then
+      slots[#slots + 1] = offset // SETUP_SIZE + 1
+    end
+  end
+  if #slots == 0 then return nil, "no setup in the dump" end
+  if #slots == 1 then dump.slot = slots[1] else dump.all = true end
+  return dump
+end
+
+--- read and check a setup dump file.
+-- @tparam string filename .syx file with path
+-- @treturn table|nil dump, see uc4.parse_dump()
+-- @treturn string|nil what is wrong with the file
+function uc4.read_dump(filename)
+  local f = io.open(filename, "rb")
+  if f == nil then return nil, "can't read file" end
+  local data = f:read("a")
+  f:close()
+  local dump, err = uc4.parse_dump(data)
+  if dump then dump.raw = data end
+  return dump, err
+end
+
 
 
 --
@@ -841,38 +959,35 @@ local function send_sysex(midi_dev, bytes, on_done)
 end
 
 --- send the Norn setup to the UC4.
--- overwrites the setup in the given slot.
+-- overwrites the setup that is selected on the UC4.
 -- @tparam table midi_dev midi device from uc4.connect()
--- @tparam[opt] integer slot setup number 1-18, default uc4.SETUP_SLOT
+-- @tparam[opt] integer slot see uc4.norn_setup(), default uc4.SETUP_SLOT
 -- @tparam[opt] function on_done called with true when the setup was sent
 function uc4.send_norn_setup(midi_dev, slot, on_done)
   slot = slot or uc4.SETUP_SLOT
   assert(slot >= 1 and slot <= uc4.SETUPS, "uc4: setup slot out of range")
   send_sysex(midi_dev, uc4.norn_setup(slot), function(ok)
-    print("uc4: norn setup sent to setup "..slot)
+    print("uc4: norn setup sent")
     if on_done then on_done(ok) end
   end)
 end
 
 --- send a sysex setup file (a dump made by the UC4) to the UC4.
+-- the file is checked first, and is not sent when something is wrong
+-- with it.
 -- @tparam table midi_dev midi device from uc4.connect()
 -- @tparam string filename .syx file with path
 -- @tparam[opt] function on_done called with true when the file was sent
 -- @treturn boolean false when the file can't be used
+-- @treturn string|nil what is wrong with the file
 function uc4.load_conf(midi_dev, filename, on_done)
-  local f = io.open(filename, "rb")
-  if f == nil then
-    print("uc4: can't open "..filename)
-    return false
-  end
-  local data = f:read("a")
-  f:close()
-  if #data < 2 or data:byte(1) ~= 0xF0 or data:byte(-1) ~= 0xF7 then
-    print("uc4: "..filename.." is not a sysex file")
-    return false
+  local dump, err = uc4.read_dump(filename)
+  if dump == nil then
+    print("uc4: "..filename..": "..err)
+    return false, err
   end
   local bytes = {}
-  for i = 1, #data do bytes[i] = data:byte(i) end
+  for i = 1, #dump.raw do bytes[i] = dump.raw:byte(i) end
   send_sysex(midi_dev, bytes, function(ok)
     print("uc4: "..filename.." sent")
     if on_done then on_done(ok) end

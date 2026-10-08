@@ -20,8 +20,9 @@ local midi_device = nil
 local NORN_SETUP = "norn setup"
 local conf_files = {} -- NORN_SETUP followed by the .syx files in PATH
 local file_index = 1
-local slot = uc4.SETUP_SLOT
+local dump = nil       -- the selected .syx file, when it is usable
 local status = ""
+local help = false     -- K1 is held: the instructions are shown
 
 --
 -- PARAM VIEW ON / OFF
@@ -71,6 +72,23 @@ end)
 --
 -- MOD MENU
 --
+-- check the selected file. the UC4 stores a dump of one setup in the
+-- setup that is selected on it, so there is no setup to choose here
+local function select_file()
+  local name = conf_files[file_index]
+  dump = nil
+  status = ""
+  if name ~= NORN_SETUP then
+    local err
+    dump, err = uc4.read_dump(PATH..name)
+    if dump == nil then
+      status = err
+    elseif dump.all then
+      status = "all setups: not tested"
+    end
+  end
+end
+
 local function scan_files()
   conf_files = {NORN_SETUP}
   for _, name in ipairs(util.scandir(PATH)) do
@@ -79,12 +97,15 @@ local function scan_files()
     end
   end
   file_index = util.clamp(file_index, 1, #conf_files)
+  select_file()
 end
 
 local m = {}
 
 m.key = function(n, z)
-  if n == 2 and z == 1 then
+  if n == 1 then
+    help = z == 1
+  elseif n == 2 and z == 1 then
     mod.menu.exit()
     return
   elseif n == 3 and z == 1 then
@@ -95,11 +116,12 @@ m.key = function(n, z)
     if midi_device == nil then
       status = "uc4 not found"
     elseif conf_files[file_index] == NORN_SETUP then
-      uc4.send_norn_setup(midi_device, slot, sent)
+      uc4.send_norn_setup(midi_device, nil, sent)
       status = "sending..."
     else
-      local ok = uc4.load_conf(midi_device, PATH..conf_files[file_index], sent)
-      status = ok and "sending..." or "can't read file"
+      local ok, err = uc4.load_conf(
+        midi_device, PATH..conf_files[file_index], sent)
+      status = ok and "sending..." or err
     end
   end
   mod.menu.redraw()
@@ -107,36 +129,56 @@ end
 
 m.enc = function(n, d)
   if n == 2 then
-    file_index = util.clamp(file_index + d, 1, #conf_files)
-    status = ""
-  elseif n == 3 and conf_files[file_index] == NORN_SETUP then
-    slot = util.clamp(slot + d, 1, uc4.SETUPS)
-    status = ""
+    local index = util.clamp(file_index + d, 1, #conf_files)
+    if index ~= file_index then
+      file_index = index
+      select_file()
+    end
   end
   mod.menu.redraw()
 end
 
+-- how to put the UC4 in receive mode and send. shown while K1 is held
+local function draw_help()
+  local lines = {
+    "ON THE UC4",
+    "1 hold shift, press edit twice",
+    "2 enc 1: setup to overwrite",
+    "3 hold enc 7 until rC00",
+    "ON NORNS",
+    "4 e2: what to send",
+    "5 k3: send. uc4 shows SE..",
+    "  no change? again from 3",
+  }
+  screen.clear()
+  for i, line in ipairs(lines) do
+    screen.level(line == string.upper(line) and 15 or 4)
+    screen.move(0, i * 8 - 1)
+    screen.text(line)
+  end
+  screen.update()
+end
+
 m.redraw = function()
-  local is_norn = conf_files[file_index] == NORN_SETUP
+  if help then
+    draw_help()
+    return
+  end
   screen.clear()
   screen.level(4)
   screen.move(0, 8)
-  screen.text("uc4 setup mode: hold enc 7")
+  screen.text("send a setup to the uc4")
   screen.move(0, 16)
-  screen.text("until the bars finish")
+  screen.text("hold k1: how to")
   screen.level(15)
   screen.move(0, 30)
-  screen.text(conf_files[file_index])
-  if is_norn then
-    screen.move(127, 30)
-    screen.text_right("to setup "..slot)
-  end
+  screen.text(util.trim_string_to_width(conf_files[file_index], 127))
   screen.level(4)
   screen.move(0, 44)
   if midi_device == nil then
     screen.text("uc4 not found")
   else
-    screen.text(is_norn and "e2 file  e3 setup  k3 send" or "e2 file  k3 send")
+    screen.text("e2 file  k3 send")
   end
   screen.level(15)
   screen.move(0, 58)
@@ -149,7 +191,7 @@ m.init = function()
   -- create data directory if it does not exist
   if not util.file_exists(PATH) then util.make_dir(PATH) end
   scan_files()
-  status = ""
+  help = false
 end
 
 m.deinit = function() end
